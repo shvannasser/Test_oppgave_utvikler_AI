@@ -10,6 +10,7 @@ const BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search";
 const HALDEN_LAT = 59.1313;
 const HALDEN_LON = 11.3871;
 
+// Initialize the MCP server
 const server = new McpServer({
   name: "halden-weather",
   version: "1.0.0",
@@ -19,6 +20,7 @@ const server = new McpServer({
   },
 });
 
+// Fetch Halden weather forecast from YR API
 async function fetchHaldenForecast() {
   const url = `https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=${HALDEN_LAT}&lon=${HALDEN_LON}`;
 
@@ -44,6 +46,13 @@ async function fetchHaldenForecast() {
     return null;
   }
 }
+
+/**
+ * Perform a search using Brave Search API
+ * @param {string} query - The search query
+ * @param {number} count - Number of results to return (default 3)
+ * @returns {Promise<Object|null>} Search results or null on error
+ */
 
 async function braveSearch(query, count = 3) {
   if (!BRAVE_API_KEY) {
@@ -77,6 +86,7 @@ async function braveSearch(query, count = 3) {
   }
 }
 
+// Format weather icon based on YR symbol code
 function formatWeatherIcon(symbolCode) {
   if (!symbolCode) return "🌤️";
 
@@ -91,7 +101,7 @@ function formatWeatherIcon(symbolCode) {
   return "🌤️";
 }
 
-// Current weather in Halden
+// Tool 1: fetch current weather in Halden
 server.tool(
   "get-current-weather",
   "Get current weather conditions in Halden using YR (Norwegian Meteorological Institute) data",
@@ -127,65 +137,121 @@ server.tool(
   }
 );
 
-// Search for local Halden information
+// Tool 2: Hourly forecast for next 12 hours
 server.tool(
-  "search-local-info",
-  "Search for local information about Halden",
-  {
-    query: {
-      type: "string",
-      description:
-        "What to search for in Halden (e.g., 'restaurants', 'events', 'hiking trails')",
-    },
-  },
-  async (args) => {
-    if (!BRAVE_API_KEY) {
+  "get-hourly-forecast",
+  "Get hourly weather forecast for Halden (next 12 hours)",
+  {},
+  async () => {
+    const data = await fetchHaldenForecast();
+    if (!data) {
       return {
-        content: [
-          {
-            type: "text",
-            text: "🔍 Search functionality requires Brave API key configuration.\n\nTo enable search:\n1. Get API key from https://brave.com/search/api/\n2. Set BRAVE_API_KEY environment variable",
-          },
-        ],
+        content: [{ type: "text", text: "Failed to get forecast data." }],
       };
     }
 
-    const searchQuery = `Halden Norway ${args.query}`;
-    const results = await braveSearch(searchQuery, 3);
+    const hourly = data.properties.timeseries.slice(0, 12).map((entry) => {
+      const time = new Date(entry.time);
+      const hour = time.getHours();
+      const details = entry.data.instant.details;
+      const next1h = entry.data.next_1_hours;
 
-    if (!results?.web?.results?.length) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `🔍 No search results found for "${args.query}" in Halden. Try different keywords.`,
-          },
-        ],
-      };
-    }
+      const icon = formatWeatherIcon(next1h?.summary?.symbol_code);
+      const temp = details.air_temperature;
+      const wind = details.wind_speed;
+      const precip = next1h?.details?.precipitation_amount || 0;
 
-    const formatted = results.web.results
-      .map(
-        (result, i) =>
-          `${i + 1}. **${result.title}**\n   ${result.url}\n   ${
-            result.description
-          }\n`
-      )
-      .join("\n");
+      return `${hour}:00 ${icon} ${temp}°C, ${wind} m/s${
+        precip > 0 ? `, ${precip}mm rain` : ""
+      }`;
+    });
 
     const output = [
-      `🔍 Local info for "${args.query}" in Halden:`,
+      "🕐 Hourly forecast for Halden (next 12 hours):",
       "",
-      formatted,
+      ...hourly,
     ].join("\n");
 
     return { content: [{ type: "text", text: output }] };
   }
 );
 
-// Weather-dependent activity suggestions
+// Tool 3: 3-day weather forecast
 server.tool(
-  "suggest-activities",
+  "get-3day-forecast",
+  "Get 3-day weather forecast for Halden",
+  {},
+  async () => {
+    const data = await fetchHaldenForecast();
+    if (!data) {
+      return {
+        content: [{ type: "text", text: "Failed to get forecast data." }],
+      };
+    }
+
+    const dailyData = {};
+
+    // Group by day
+    data.properties.timeseries.forEach((entry) => {
+      const date = new Date(entry.time);
+      const dayKey = date.toISOString().split("T")[0];
+
+      if (!dailyData[dayKey]) {
+        dailyData[dayKey] = {
+          temps: [],
+          conditions: [],
+          precipitation: 0,
+        };
+      }
+
+      dailyData[dayKey].temps.push(entry.data.instant.details.air_temperature);
+
+      if (entry.data.next_1_hours?.summary?.symbol_code) {
+        dailyData[dayKey].conditions.push(
+          entry.data.next_1_hours.summary.symbol_code
+        );
+      }
+
+      if (entry.data.next_1_hours?.details?.precipitation_amount) {
+        dailyData[dayKey].precipitation +=
+          entry.data.next_1_hours.details.precipitation_amount;
+      }
+    });
+
+    const days = Object.entries(dailyData)
+      .slice(0, 3)
+      .map(([date, data]) => {
+        const dayName = new Date(date).toLocaleDateString("en-US", {
+          weekday: "long",
+          month: "short",
+          day: "numeric",
+        });
+        const minTemp = Math.min(...data.temps);
+        const maxTemp = Math.max(...data.temps);
+        const mostCommon = data.conditions
+          .sort(
+            (a, b) =>
+              data.conditions.filter((v) => v === a).length -
+              data.conditions.filter((v) => v === b).length
+          )
+          .pop();
+        const icon = formatWeatherIcon(mostCommon);
+        const rain = data.precipitation.toFixed(1);
+
+        return `${icon} ${dayName}: ${minTemp}°C - ${maxTemp}°C${
+          rain > 0 ? `, ${rain}mm rain` : ""
+        }`;
+      });
+
+    const output = ["📅 3-day forecast for Halden:", "", ...days].join("\n");
+
+    return { content: [{ type: "text", text: output }] };
+  }
+);
+
+// Tool 4: Weather-dependent activity suggestions
+server.tool(
+  "suggest-activities (Brave Search)",
   "Get activity suggestions based on current Halden weather",
   {},
   async () => {
