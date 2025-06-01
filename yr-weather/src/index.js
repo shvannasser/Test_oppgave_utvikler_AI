@@ -251,7 +251,7 @@ server.tool(
 
 // Tool 4: Weather-dependent activity suggestions
 server.tool(
-  "suggest-activities (Brave Search)",
+  "suggest-activities-brave-search",
   "Get activity suggestions based on current Halden weather",
   {},
   async () => {
